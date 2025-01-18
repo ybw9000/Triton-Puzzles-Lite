@@ -9,10 +9,29 @@ Modified from [Triton-Puzzles](https://github.com/srush/Triton-Puzzles/) by Sash
 
 You only need to install `torch`. Triton and NumPy are installed when installing PyTorch. Other dependencies are fully removed from the original version. All puzzles are executed on **CPU through Triton interpreter**. So any GPU-related configuration is not necessary (i.e. You can just install torch-cpu) -- but you can also run them in GPU.
 
+For linux system, you can install torch and triton by running the following commands:
 ```bash
 # In your Python virtual environment / conda environment
 pip install torch==2.5.0
 # Check triton version: triton==3.1.0
+```
+For Mac M1/M2 users, you can install torch by either conda or pip, and build triton from source in a virtual environment, check the triton repo.
+
+```bash
+# set up miniconda
+conda create -n myenv
+conda activate myenv
+# go to pytorch.org and find the conda install command, e.g.,
+conda install pytorch torchvision torchaudio -c pytorch
+# build triton from source according to the triton repo, e.g.,
+git clone https://github.com/triton-lang/triton.git;
+cd triton;
+
+python -m venv .venv --prompt triton;
+source .venv/bin/activate;
+
+pip install ninja cmake wheel pybind11; # build-time dependencies
+pip install -e python
 ```
 
 Note: there is a known version issue that you may encounter. See [Known Issues](#known-issues).
