@@ -492,7 +492,7 @@ def softmax_kernel(x_ptr, z_ptr, N0, N1, T, B0: tl.constexpr, B1: tl.constexpr):
     row_mask = row_off < N0
     block_max = tl.full([B0], -float("inf"), dtype=tl.float32)
     block_exp_sum = tl.zeros([B0], dtype=tl.float32)
-    for j in range(0, T, B1):
+    for j in tl.range(0, T, B1):
         col_off = tl.arange(0, B1) + j
         col_mask = col_off < T
         block_off = row_off[:, None] * T + col_off[None, :]
@@ -505,7 +505,7 @@ def softmax_kernel(x_ptr, z_ptr, N0, N1, T, B0: tl.constexpr, B1: tl.constexpr):
         scaled_block_exp_sum = block_exp_sum * stable_exp(max_offset)
         new_exp_sum = stable_exp((block - block_max[:, None])).sum(axis=1)
         block_exp_sum = scaled_block_exp_sum + new_exp_sum
-    for j in range(0, T, B1):
+    for j in tl.range(0, T, B1):
         col_off = tl.arange(0, B1) + j
         col_mask = col_off < T
         block_off = row_off[:, None] * T + col_off[None, :]
@@ -568,7 +568,7 @@ def flashatt_kernel(
     block_exp_sum = tl.zeros([B0], dtype=tl.float32)
     block_accum_sum = tl.zeros([B0], dtype=tl.float32)
     q = tl.load(q_ptr + q_off, q_mask)
-    for j in range(0, T, B1):
+    for j in tl.range(0, T, B1):
         kv_off = tl.arange(0, B1) + j
         kv_mask = kv_off < T
         k = tl.load(k_ptr + kv_off, kv_mask)  # B1
@@ -682,7 +682,7 @@ def dot_kernel(
     
     bmn_accum = tl.zeros([B2, B0, B1], dtype=tl.float32)
 
-    for k in range(0, MID, B_MID):
+    for k in tl.range(0, MID, B_MID):
         k_off = tl.arange(0, B_MID) + k
         k_mask = k_off < MID
         bmk_off = b_off[:, None, None] * N0 * MID + m_off[None, :, None] * MID + k_off[None, None, :]
@@ -707,9 +707,12 @@ def dot_kernel(
 r"""
 ## Puzzle 12: Quantized Matrix Mult
 
-When doing matrix multiplication with quantized neural networks a common strategy is to store the weight matrix in lower precision, with a shift and scale term.
+When doing matrix multiplication with quantized neural networks a common strategy is to store the weight matrix in lower precision,
+with a shift and scale term.
 
-For this problem our `weight` will be stored in 4 bits. We can store `FPINT` of these in a 32 bit integer. In addition for every `group` weights in order we will store 1 `scale` float value and 1 `shift` 4 bit value. We store these for the column of weight. The `activation`s are stored separately in standard floats.
+For this problem our `weight` will be stored in 4 bits. We can store `FPINT` of these in a 32 bit integer.
+In addition for every `group` weights in order we will store 1 `scale` float value and 1 `shift` 4 bit value.
+We store these for the column of weight. The `activation`s are stored separately in standard floats.
 
 Mathematically it looks like.
 
@@ -720,6 +723,26 @@ Mathematically it looks like.
 Where `g` is the number of groups (`GROUP`).
 
 However, it is a bit more complex since we need to also extract the 4-bit values into floats to begin.
+
+Let me break down the extract function which is used to unpack 4-bit values from a 32-bit integer:
+
+mask
+Here's what's happening step by step:
+Let's say we have a 32-bit integer that contains eight 4-bit values:
+1010 0011 1111 0000 0101 1100 0011 0001
+
+over = torch.arange(8) * 4 creates an array of bit shifts:   [0, 4, 8, 12, 16, 20, 24, 28]
+
+mask = 2**4 - 1 creates the binary number 1111 (15 in decimal)
+
+For each shift value in over, the function:
+Right-shifts the input number by that amount (x >> over)
+Applies the mask with AND operation (& mask)
+So for our example number:
+   Shift by 0:  (...0011 0001) & 1111 = 0001 = 1
+   Shift by 4:  (...1100 0011) & 1111 = 0011 = 3
+   Shift by 8:  (...0101 1100) & 1111 = 1100 = 12
+   ...and so on
 
 Note:
 - We don't consider batch size, i.e. `i`, in this puzzle.
@@ -767,6 +790,7 @@ def quant_dot_kernel(
     block_id_j = tl.program_id(0)
     block_id_k = tl.program_id(1)
     # Finish me!
+    m_off = tl.arange(0, B0)
     return
 
 
