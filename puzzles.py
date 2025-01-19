@@ -711,7 +711,8 @@ When doing matrix multiplication with quantized neural networks a common strateg
 with a shift and scale term.
 
 For this problem our `weight` will be stored in 4 bits. We can store `FPINT` of these in a 32 bit integer.
-In addition for every `group` weights in order we will store 1 `scale` float value and 1 `shift` 4 bit value.
+In addition for every `group` number of weight element in order we will store 1 `scale` float value and 1 `shift` 4 bit value.
+This is a essentially like a MXFormat
 We store these for the column of weight. The `activation`s are stored separately in standard floats.
 
 Mathematically it looks like.
@@ -749,8 +750,9 @@ Note:
 - Remember to unpack the `FPINT` values into separate 4-bit values. This contains some shape manipulation.
 """
 
-FPINT = 32 // 4
-GROUP = 8
+BITS = 4
+FPINT = 32 // BITS  # compression ratio
+GROUP = 8  # actually means group size
 
 
 def quant_dot_spec(
@@ -787,10 +789,58 @@ def quant_dot_kernel(
     B1: tl.constexpr,
     B_MID: tl.constexpr,
 ):
+    assert MID % (FPINT * GROUP) == 0
+    assert B_MID % (FPINT * GROUP) == 0
     block_id_j = tl.program_id(0)
     block_id_k = tl.program_id(1)
     # Finish me!
-    m_off = tl.arange(0, B0)
+    m_off = tl.arange(0, B0) + block_id_j * B0
+    n_off = tl.arange(0, B1) + block_id_k * B1
+    m_mask = m_off < N0
+    n_mask = n_off < N1
+    accum = tl.zeros([B0, B1], dtype=tl.float32)
+    for j in tl.range(0, MID, B_MID):
+        # activation
+        k_off_act = tl.arange(0, B_MID) + j
+        k_mask_act = k_off_act < MID
+        kn_off = k_off_act[:, None] * N1 + n_off[None, :]
+        kn_mask = k_mask_act[:, None] & n_mask[None, :]
+        act = tl.load(activation_ptr + kn_off, kn_mask)
+
+        # weight
+        k_off_weight = tl.arange(0, B_MID // FPINT) + j // FPINT
+        k_mask_weight = k_off_weight < (MID // FPINT)
+        mk_off_weight = m_off[:, None] * (MID // FPINT) + k_off_weight[None, :]
+        mk_mask_weight = m_mask[:, None] & k_mask_weight[None, :]
+        weight = tl.load(weight_ptr + mk_off_weight, mk_mask_weight)  # shape B0, B_MID // fpint
+        bit_shifts = tl.arange(0, FPINT) * BITS
+        bit_mask = 1 << BITS - 1
+        decode_weight = (weight[:, :, None] >> bit_shifts[None, None, :]) & bit_mask  # shape B0, B_MID // fpint, fpint
+
+        # scale
+        k_off_scale = tl.arange(0, B_MID // GROUP) + j // GROUP
+        k_mask_scale = k_off_scale < (MID // GROUP)
+        mk_off_scale = m_off[:, None] * (MID // GROUP) + k_off_scale[None, :]
+        mk_mask_scale = m_mask[:, None] & k_mask_scale[None, :]
+        scale = tl.load(scale_ptr + mk_off_scale, mk_mask_scale)  # B0, B_MID // group
+
+        # shift
+        k_off_shift = tl.arange(0, B_MID // (FPINT * GROUP)) + j // (FPINT * GROUP)
+        k_mask_shift = k_off_shift < (MID // (FPINT * GROUP))
+        mk_off_shift = m_off[:, None] * (MID // (FPINT * GROUP)) + k_mask_shift[None, :]
+        mk_mask_shift = m_mask[:, None] & k_mask_shift[None, :]
+        shift = tl.load(offset_ptr + mk_off_shift, mk_mask_shift)  # B0, B_MID // (group * fpint)
+        decode_shift = (shift[:, :, None] >> bit_shifts[None, None, :]) & bit_mask  # B0, B_MID // (group * fpint), fpint
+
+        shifted_weight = decode_weight.reshape(B0, B_MID // GROUP, GROUP) - decode_shift.reshape(B0, B_MID // GROUP)[:, :, None]  # B0, B_MID // GROUP, GROUP
+        scaled_weight = shifted_weight * scale[:, :, None]
+
+        accum += tl.dot(scaled_weight.reshape(B0, B_MID), act)
+    
+    mn_off = m_off[:, None] * N1 + n_off[None, :]
+    mn_mask = m_mask[:, None] & n_mask[None, :]
+    tl.store(z_ptr + mn_off, accum, mn_mask)
+
     return
 
 
