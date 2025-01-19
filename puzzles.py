@@ -466,10 +466,10 @@ they recommend not using `exp` but instead using `exp2`. You need the identity
     \exp(x) = 2^{\log_2(e) x}
 
 Advanced: there one way to do this with 3 loops. You can also do it with 2 loops if you are clever. 
-Hint: you will find this identity useful:
+Hint: you will find this identity useful, aka
 
 .. math::
-    \exp(x_i - m) =  \exp(x_i - m/2 - m/2) = \exp(x_i - m/ 2) /  \exp(m/2)
+    \exp(x_i - (a + b)) =  \exp(x_i - a) *  \exp(-b)
 """
 
 
@@ -485,7 +485,34 @@ def softmax_kernel(x_ptr, z_ptr, N0, N1, T, B0: tl.constexpr, B1: tl.constexpr):
     """2 loops ver."""
     block_id_i = tl.program_id(0)
     log2_e = 1.44269504
-    # Finish me!
+
+    stable_exp = lambda x: tl.exp2(x * log2_e)
+
+    row_off = tl.arange(0, B0) + block_id_i * B0
+    row_mask = row_off < N0
+    block_max = tl.full([B0], -float("inf"), dtype=tl.float32)
+    block_exp_sum = tl.zeros([B0], dtype=tl.float32)
+    for j in range(0, T, B1):
+        col_off = tl.arange(0, B1) + j
+        col_mask = col_off < T
+        block_off = row_off[:, None] * T + col_off[None, :]
+        block_mask = row_mask[:, None] & col_mask[None, :]
+        block = tl.load(x_ptr + block_off, block_mask)
+        cur_max = block.max(axis=1)
+        new_max = tl.maximum(block_max, cur_max)
+        max_offset = block_max - new_max
+        block_max = new_max
+        scaled_block_exp_sum = block_exp_sum * stable_exp(max_offset)
+        new_exp_sum = stable_exp((block - block_max[:, None])).sum(axis=1)
+        block_exp_sum = scaled_block_exp_sum + new_exp_sum
+    for j in range(0, T, B1):
+        col_off = tl.arange(0, B1) + j
+        col_mask = col_off < T
+        block_off = row_off[:, None] * T + col_off[None, :]
+        block_mask = row_mask[:, None] & col_mask[None, :]
+        block = tl.load(x_ptr + block_off, block_mask)
+        sm_block = stable_exp(block - block_max[:, None]) / block_exp_sum[:, None]
+        tl.store(z_ptr + block_off, sm_block, block_mask)
     return
 
 
