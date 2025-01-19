@@ -628,7 +628,7 @@ def conv2d_kernel(
 
 
 r"""
-## Puzzle 11: Matrix Multiplication
+## Puzzle 11: batched Matrix Multiplication, aka BMM
 
 A blocked matrix multiplication.
 
@@ -670,6 +670,37 @@ def dot_kernel(
     block_id_k = tl.program_id(1)
     block_id_i = tl.program_id(2)
     # Finish me!
+    # batching
+    b_off = tl.arange(0, B2) + block_id_i * B2
+    b_mask = b_off < N2
+
+    # M, N, K, gemm is M, K dot K, N
+    m_off = tl.arange(0, B0) + block_id_j * B0
+    n_off = tl.arange(0, B1) + block_id_k * B1
+    m_mask = m_off < N0
+    n_mask = n_off < N1
+    
+    bmn_accum = tl.zeros([B2, B0, B1], dtype=tl.float32)
+
+    for k in range(0, MID, B_MID):
+        k_off = tl.arange(0, B_MID) + k
+        k_mask = k_off < MID
+        bmk_off = b_off[:, None, None] * N0 * MID + m_off[None, :, None] * MID + k_off[None, None, :]
+        bmk_mask = b_mask[:, None, None] & m_mask[None, :, None] & k_mask[None, None, :]
+        bmk = tl.load(x_ptr + bmk_off, bmk_mask)
+
+        bkn_off = b_off[:, None, None] * MID * N1 + k_off[None, :, None] * N1 + n_off[None, None, :]
+        bkn_mask = b_mask[:, None, None] & k_mask[None, :, None] & n_mask[None, None, :]
+        bkn = tl.load(y_ptr + bkn_off, bkn_mask)
+
+        # somehow there is a bug? that if we directly provide bmn_accum to tl.dot(..., acc=bmn_accum)
+        bmn_accum += tl.dot(bmk, bkn)
+
+    bmn_off = b_off[:, None, None] * N0 * N1 + m_off[None, :, None] * N1 + n_off[None, None, :]
+    bmn_mask = b_mask[:, None, None] & m_mask[None, :, None] & n_mask[None, None, :]
+    tl.store(z_ptr + bmn_off, bmn_accum, bmn_mask)
+
+
     return
 
 
