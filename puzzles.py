@@ -539,7 +539,7 @@ Uses zero programs. Block size `B0` represent the batches of `q` to process out 
 
 This can be done in 1 loop using a similar trick from the last puzzle.
 
-Hint: Use `tl.where` to mask `q dot k` to -inf to avoid overflow (NaN).
+Hint: Use `tl.where` to mask `q dot k` to -inf to avoid incorrect padding.
 """
 
 
@@ -572,7 +572,8 @@ def flashatt_kernel(
         kv_off = tl.arange(0, B1) + j
         kv_mask = kv_off < T
         k = tl.load(k_ptr + kv_off, kv_mask)  # B1
-        qk = q[:, None] * k[None, :]  # shape: B0, B1
+        # auto padding 0 will result incorect sm values, so out of bound needs to be padded with -inf
+        qk = q[:, None] * k[None, :]  + tl.where(q_mask[:, None] & kv_mask[None, :], 0, -float("inf"))  # shape: B0, B1
         # update max
         qk_max = qk.max(axis=1)  # B0,
         new_max = tl.maximum(qk_max, block_max)
@@ -624,6 +625,22 @@ def conv2d_kernel(
 ):
     block_id_i = tl.program_id(0)
     # Finish me!
+    b_off = tl.arange(0, B0) + block_id_i * B0
+    b_mask = b_off < N0
+
+    f_off = tl.arange(0, KH)[:, None] * KW + tl.arange(0, KW)[None, :]
+    filter = tl.load(k_ptr + f_off)
+    for i in tl.range(0, H):
+        h_off = tl.arange(0, KH) + i
+        h_mask = h_off < H
+        for j in tl.range(0, W):
+            w_off = tl.arange(0, KW) + j
+            w_mask = w_off < W
+            act_off = b_off[:, None, None] * H * W + h_off[None, :, None] * W + w_off[None, None, :]
+            act_mask = b_mask[:, None, None] & h_mask[None, :, None] & w_mask[None, None, :]
+            act = tl.load(x_ptr + act_off, act_mask, 0.0)
+            res = (act * filter[None, : , :]).sum()
+            tl.store(z_ptr + b_off * H * W + i * W + j, res)
     return
 
 
@@ -997,7 +1014,7 @@ def run_puzzles(args, puzzles: List[int]):
         ok = test(
             quant_dot_kernel,
             quant_dot_spec,
-            B={"B0": 16, "B1": 16, "B_MID": 64},
+            B={"B0": 16, "B1": 16, "B_MID":128},
             nelem={"N0": 32, "N1": 32, "MID": 64},
             print_log=print_log,
             device=device,
