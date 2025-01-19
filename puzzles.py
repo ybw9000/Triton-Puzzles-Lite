@@ -1,6 +1,9 @@
 import argparse
 from typing import List
 import os
+import sys
+
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "triton"))
 
 import torch
 import triton
@@ -198,7 +201,7 @@ r"""
 ## Puzzle 1: Constant Add
 
 Add a constant to a vector. Uses one program id axis. 
-Block size `B0` is always the same as vector `x` with length `N0`.
+Block size `B0` is always the same as vector `x` with length `N0`, i.e., a single block with block_id 0
 
 .. math::
     z_i = 10 + x_i \text{ for } i = 1\ldots N_0
@@ -212,10 +215,12 @@ def add_spec(x: Float32[32,]) -> Float32[32,]:
 
 @triton.jit
 def add_kernel(x_ptr, z_ptr, N0, B0: tl.constexpr):
-    # We name the offsets of the pointers as "off_"
+    # no need to get program id as there is only one block
     off_x = tl.arange(0, B0)
     x = tl.load(x_ptr + off_x)
     # Finish me!
+    y = x + 10.0
+    tl.store(z_ptr + off_x, y)
     return
 
 
@@ -237,6 +242,11 @@ def add2_spec(x: Float32[200,]) -> Float32[200,]:
 @triton.jit
 def add_mask2_kernel(x_ptr, z_ptr, N0, B0: tl.constexpr):
     # Finish me!
+    pid = tl.program_id(0)
+    x_off = tl.arange(0, B0) + pid * B0
+    x = tl.load(x_ptr + x_off, x_off < N0)
+    y = x + 10.0
+    tl.store(z_ptr + x_off, y, x_off < N0)
     return
 
 
@@ -260,6 +270,14 @@ def add_vec_spec(x: Float32[32,], y: Float32[32,]) -> Float32[32, 32]:
 @triton.jit
 def add_vec_kernel(x_ptr, y_ptr, z_ptr, N0, N1, B0: tl.constexpr, B1: tl.constexpr):
     # Finish me!
+    off_x = tl.arange(0, B0)
+    off_y = tl.arange(0, B1)
+    # note that off_z is a 2D array, thus row indices should be strided by B0
+    off_z = off_y[:, None] * B0 + off_x[None, :]
+    x = tl.load(x_ptr + off_x)
+    y = tl.load(y_ptr + off_y)
+    z = y[:, None] + x[None, :]
+    tl.store(z_ptr + off_z, z)
     return
 
 
@@ -287,6 +305,16 @@ def add_vec_block_kernel(
     block_id_x = tl.program_id(0)
     block_id_y = tl.program_id(1)
     # Finish me!
+    x_off = tl.arange(0, B0) + block_id_x * B0
+    y_off = tl.arange(0, B1) + block_id_y * B1
+    x_mask = x_off < N0
+    y_mask = y_off < N1
+    z_off = y_off[:, None] * N0 + x_off[None, :]
+    x_block = tl.load(x_ptr + x_off, x_off < N0)
+    y_block = tl.load(y_ptr + y_off, y_off < N1)
+    z_block = y_block[:, None] + x_block[None, :]
+    z_mask = y_mask[:, None] & x_mask[None, :]
+    tl.store(z_ptr + z_off, z_block, z_mask)
     return
 
 
@@ -314,6 +342,17 @@ def mul_relu_block_kernel(
     block_id_x = tl.program_id(0)
     block_id_y = tl.program_id(1)
     # Finish me!
+    x_off = tl.arange(0, B0) + block_id_x * B0
+    y_off = tl.arange(0, B1) + block_id_y * B1
+    x_mask = x_off < N0
+    y_mask = y_off < N1
+    z_off = y_off[:, None] * N0 + x_off[None, :]
+    x_block = tl.load(x_ptr + x_off, x_off < N0)
+    y_block = tl.load(y_ptr + y_off, y_off < N1)
+    z_block = y_block[:, None] * x_block[None, :]
+    z_block_relu = tl.where(z_block > 0, z_block, 0)
+    z_mask = y_mask[:, None] & x_mask[None, :]
+    tl.store(z_ptr + z_off, z_block_relu, z_mask)
     return
 
 
@@ -322,7 +361,7 @@ r"""
 
 Backwards of a function that multiplies a matrix with a row vector and take a relu.
 
-Uses two program blocks. Block size `B0` is always less than the vector `x` length `N0`.
+Uses two program block axes. Block size `B0` is always less than the vector `x` length `N0`.
 Block size `B1` is always less than vector `y` length `N1`. Chain rule backward `dz`
 is of shape `N1` by `N0`
 
@@ -354,6 +393,19 @@ def mul_relu_block_back_kernel(
     block_id_i = tl.program_id(0)
     block_id_j = tl.program_id(1)
     # Finish me!
+    col_off = tl.arange(0, B0) + block_id_i * B0
+    y_off = tl.arange(0, B1) + block_id_j * B1
+    x_off = y_off[:, None] * N0 + col_off[None, :]
+    row_mask = y_off < N1
+    col_mask = col_off < N0
+    x_mask = row_mask[:, None] & col_mask[None, :]
+    x = tl.load(x_ptr + x_off, x_mask)
+    y = tl.load(y_ptr + y_off, row_mask)
+    z = x * y[:, None]
+    dz = tl.load(dz_ptr + x_off, x_mask)
+    dx = dz * y[:, None]
+    dx_relu = tl.where(z > 0, dx, 0)
+    tl.store(dx_ptr + x_off, dx_relu, x_mask)
     return
 
 
@@ -362,7 +414,7 @@ r"""
 
 Sum of a batch of numbers.
 
-Uses one program blocks. Block size `B0` represents a range of batches of  `x` of length `N0`.
+Uses one program block axis. Block size `B0` represents a range of batches of  `x` of length `N0`.
 Each element is of length `T`. Process it `B1 < T` elements at a time.  
 
 .. math::
@@ -379,6 +431,20 @@ def sum_spec(x: Float32[4, 200]) -> Float32[4,]:
 @triton.jit
 def sum_kernel(x_ptr, z_ptr, N0, N1, T, B0: tl.constexpr, B1: tl.constexpr):
     # Finish me!
+    block_id_row = tl.program_id(0)
+    row_off = tl.arange(0, B0) + block_id_row * B0
+    row_mask = row_off < N0
+    i = 0
+    while i * B1 < T:
+        col_off = tl.arange(0, B1) + i * B1
+        col_mask = col_off < T
+        x_off = row_off[:, None] * T + col_off[None, :]
+        x_mask = row_mask[:, None] & col_mask[None, :]
+        x = tl.load(x_ptr + x_off, x_mask)
+        x_sum = x.sum(axis=1)
+        accum = x_sum if i == 0 else accum + x_sum
+        i += 1
+    tl.store(z_ptr + row_off, accum, row_mask)
     return
 
 
