@@ -15,10 +15,13 @@ def demo1(x_ptr):
     range = tl.arange(0, 8)
     # print works in the interpreter
     print(range)
-    # load the first 5 elements of x_ptr, if the index is less than 5
-    # if the index is not less than 5, load 3
+    # load the first 8 elements of x_ptr,  if the index is not less than 5, pad 3, if 3 is not given, pad 0
     x = tl.load(x_ptr + range, range < 5, 3)
     print(x)
+    y = tl.load(x_ptr + range, range < 5)
+    print(y)
+    z = x + y
+    print(z)
 
 
 def run_demo1():
