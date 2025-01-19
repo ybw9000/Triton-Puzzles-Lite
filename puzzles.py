@@ -562,6 +562,35 @@ def flashatt_kernel(
     log2_e = 1.44269504
     myexp = lambda x: tl.exp2(log2_e * x)
     # Finish me!
+    q_off = tl.arange(0, B0) + block_id_i * B0
+    q_mask = q_off < N0
+    block_max = tl.full([B0], -float("inf"), dtype=tl.float32)
+    block_exp_sum = tl.zeros([B0], dtype=tl.float32)
+    block_accum_sum = tl.zeros([B0], dtype=tl.float32)
+    q = tl.load(q_ptr + q_off, q_mask)
+    for j in range(0, T, B1):
+        kv_off = tl.arange(0, B1) + j
+        kv_mask = kv_off < T
+        k = tl.load(k_ptr + kv_off, kv_mask)  # B1
+        qk = q[:, None] * k[None, :]  # shape: B0, B1
+        # update max
+        qk_max = qk.max(axis=1)  # B0,
+        new_max = tl.maximum(qk_max, block_max)
+        block_max_offset = block_max - new_max
+        block_max = new_max
+        # scale
+        exp_offset = myexp(block_max_offset)
+        new_exp = myexp(qk - qk_max[:, None])  # B0, B1
+        # denominator
+        block_exp_sum *= exp_offset
+        block_exp_sum += new_exp.sum(axis=1)
+        # numberator
+        block_accum_sum *= exp_offset
+        v = tl.load(v_ptr + kv_off, kv_mask)  # B1
+        new_qv = (v[None, :] * new_exp).sum(1)  # B0
+        block_accum_sum += new_qv
+    out = block_accum_sum / block_exp_sum
+    tl.store(z_ptr + q_off, out, q_mask)
     return
 
 
