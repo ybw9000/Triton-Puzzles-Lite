@@ -27,9 +27,6 @@ conda install pytorch torchvision torchaudio -c pytorch
 git clone https://github.com/triton-lang/triton.git;
 cd triton;
 
-python -m venv .venv --prompt triton;
-source .venv/bin/activate;
-
 pip install ninja cmake wheel pybind11; # build-time dependencies
 pip install -e python
 ```
