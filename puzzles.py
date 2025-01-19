@@ -814,7 +814,7 @@ def quant_dot_kernel(
         mk_mask_weight = m_mask[:, None] & k_mask_weight[None, :]
         weight = tl.load(weight_ptr + mk_off_weight, mk_mask_weight)  # shape B0, B_MID // fpint
         bit_shifts = tl.arange(0, FPINT) * BITS
-        bit_mask = 1 << BITS - 1
+        bit_mask = (1 << BITS) - 1
         decode_weight = (weight[:, :, None] >> bit_shifts[None, None, :]) & bit_mask  # shape B0, B_MID // fpint, fpint
 
         # scale
@@ -827,7 +827,7 @@ def quant_dot_kernel(
         # shift
         k_off_shift = tl.arange(0, B_MID // (FPINT * GROUP)) + j // (FPINT * GROUP)
         k_mask_shift = k_off_shift < (MID // (FPINT * GROUP))
-        mk_off_shift = m_off[:, None] * (MID // (FPINT * GROUP)) + k_mask_shift[None, :]
+        mk_off_shift = m_off[:, None] * (MID // (FPINT * GROUP)) + k_off_shift[None, :]
         mk_mask_shift = m_mask[:, None] & k_mask_shift[None, :]
         shift = tl.load(offset_ptr + mk_off_shift, mk_mask_shift)  # B0, B_MID // (group * fpint)
         decode_shift = (shift[:, :, None] >> bit_shifts[None, None, :]) & bit_mask  # B0, B_MID // (group * fpint), fpint
